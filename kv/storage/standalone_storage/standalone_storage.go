@@ -39,13 +39,13 @@ func (s *StandAloneStorage) Stop() error {
 	return s.enginesInner.Close()
 }
 
-func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
+func (s *StandAloneStorage) Reader(_ *kvrpcpb.Context) (storage.StorageReader, error) {
 	// get and scan
 	txn := s.enginesInner.Kv.NewTransaction(false)
 	return &StandAloneStorageReader{txn: txn}, nil
 }
 
-func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
+func (s *StandAloneStorage) Write(_ *kvrpcpb.Context, batch []storage.Modify) error {
 	// put and delete
 	// Your Code Here (1).
 	for _, m := range batch {
