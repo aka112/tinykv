@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -131,6 +132,8 @@ type Raft struct {
 	// the leader id
 	Lead uint64
 
+	logger *log.Logger
+
 	// heartbeat interval, should send
 	heartbeatTimeout int
 	// baseline of election interval
@@ -165,40 +168,136 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	raftLog := newLog(c.Storage)
+	hardState, _, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	r := &Raft{
+		id:               c.ID,
+		Term:             hardState.GetTerm(),
+		Vote:             hardState.GetVote(),
+		RaftLog:          raftLog,
+		Prs:              map[uint64]*Progress{},
+		State:            StateFollower,
+		votes:            map[uint64]bool{},
+		msgs:             []pb.Message{},
+		Lead:             None,
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		electionElapsed:  0,
+		heartbeatElapsed: 0,
+		logger:           log.New(),
+	}
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	pr := r.Prs[to]
+	m := pb.Message{}
+	m.To = to
+	term, _ := r.RaftLog.Term(pr.Next - 1)
+	ents := r.RaftLog.nextEnts()
+	if len(ents) == 0 {
+		return false
+	}
+	var ents1 []*pb.Entry
+	for _, val := range ents {
+		ents1 = append(ents1, &val)
+	}
+	m.MsgType = pb.MessageType_MsgAppend
+	m.Index = pr.Next - 1
+	m.LogTerm = term
+	m.Entries = ents1
+	m.Commit = r.RaftLog.committed
+	r.msgs = append(r.msgs, m)
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	commit := min(r.Prs[to].Match, r.RaftLog.committed)
+	m := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeat,
+		To:      to,
+		Commit:  commit,
+	}
+	r.msgs = append(r.msgs, m)
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	if r.State == StateLeader {
+		r.heartbeatElapsed++
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			r.heartbeatElapsed = 0
+			if err := r.Step(pb.Message{
+				MsgType: pb.MessageType_MsgBeat,
+				To:      r.id,
+				From:    r.id,
+			}); err != nil {
+				print(err)
+			}
+		}
+	} else {
+		r.electionElapsed++
+		if r.electionElapsed >= r.electionTimeout {
+			r.electionElapsed = 0
+			if err := r.Step(pb.Message{
+				MsgType: pb.MessageType_MsgHup,
+				To:      r.id,
+				From:    r.id,
+			}); err != nil {
+				print(err)
+			}
+		}
+	}
+
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.Term = term
+	r.Vote = None
+	r.electionElapsed = 0
+	r.Lead = lead
+	r.State = StateFollower
+	r.votes = map[uint64]bool{}
+	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	if r.State == StateLeader {
+		panic("invalid transition [leader -> candidate]")
+	}
+	r.Term++
+	r.Vote = r.id
+	r.electionElapsed = 0
+	r.State = StateCandidate
+	r.votes = map[uint64]bool{}
+	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	if r.State == StateFollower {
+		panic("invalid transition [follower -> leader]")
+	}
+	r.State = StateLeader
+	r.heartbeatElapsed = 0
+	r.electionElapsed = 0
+	r.Prs = map[uint64]*Progress{}
+
 }
 
 // Step the entrance of handle message, see `MessageType`
