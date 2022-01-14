@@ -180,21 +180,20 @@ func newRaft(c *Config) *Raft {
 		panic(err1)
 	}
 	r := &Raft{
-		id:                        c.ID,
-		Term:                      hardState.GetTerm(),
-		Vote:                      hardState.GetVote(),
-		RaftLog:                   raftLog,
-		Prs:                       map[uint64]*Progress{},
-		State:                     StateFollower,
-		votes:                     map[uint64]bool{},
-		msgs:                      []pb.Message{},
-		Lead:                      None,
-		heartbeatTimeout:          c.HeartbeatTick,
-		electionTimeout:           c.ElectionTick,
-		randomizedElectionTimeout: c.ElectionTick,
-		electionElapsed:           0,
-		heartbeatElapsed:          0,
-		logger:                    log.New(),
+		id:               c.ID,
+		Term:             hardState.GetTerm(),
+		Vote:             hardState.GetVote(),
+		RaftLog:          raftLog,
+		Prs:              map[uint64]*Progress{},
+		State:            StateFollower,
+		votes:            map[uint64]bool{},
+		msgs:             []pb.Message{},
+		Lead:             None,
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,
+		electionElapsed:  0,
+		heartbeatElapsed: 0,
+		logger:           log.New(),
 	}
 	nodes := confState.GetNodes()
 	if c.peers == nil {
@@ -268,7 +267,7 @@ func (r *Raft) tick() {
 	if r.State == StateLeader {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
-			r.logger.Info("Reached heartbeatTimeout")
+			//r.logger.Info("Reached heartbeatTimeout")
 			r.heartbeatElapsed = 0
 			if err := r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgBeat,
@@ -281,7 +280,7 @@ func (r *Raft) tick() {
 	} else {
 		r.electionElapsed++
 		if r.electionElapsed >= r.randomizedElectionTimeout {
-			r.logger.Infof("Reached electionTimeout, %x starts a election", r.id)
+			//r.logger.Infof("Reached electionTimeout, %x starts a election", r.id)
 			r.electionElapsed = 0
 			if err := r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgHup,
@@ -305,7 +304,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Lead = lead
 	r.State = StateFollower
 	r.votes = map[uint64]bool{}
-	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
+	//r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -320,7 +319,7 @@ func (r *Raft) becomeCandidate() {
 	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.electionElapsed = 0
 	r.State = StateCandidate
-	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
+	//r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -346,13 +345,22 @@ func (r *Raft) becomeLeader() {
 	if err != nil {
 		return
 	}
-	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
+	for peer := range r.Prs {
+		if peer == r.id {
+			continue
+		}
+		r.sendAppend(peer)
+	}
+	//r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+	}
 	switch r.State {
 	case StateFollower:
 		err := r.stepFollower(m)
@@ -383,6 +391,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleMsgPropose(m)
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
+	case pb.MessageType_MsgHup:
 	}
 	return nil
 }
@@ -423,6 +432,7 @@ func (r *Raft) handleMsgHup() {
 			r.becomeLeader()
 			return
 		}
+		// broadcast MsgRequestVote
 		for k := range r.Prs {
 			if k == r.id {
 				continue
@@ -452,7 +462,7 @@ func (r *Raft) handleMsgBeat() {
 			From:    r.id,
 			Term:    r.Term,
 		})
-		r.logger.Infof("%x broadcast heartbeat to %x.", r.id, k)
+		//r.logger.Infof("%x broadcast heartbeat to %x.", r.id, k)
 	}
 }
 
@@ -477,8 +487,9 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 
 func (r *Raft) handleRequestVote(m pb.Message) {
 	if r.Term <= m.Term {
-		r.logger.Infof("%x's term %d is smaller than %x's term %d", r.id, r.Term, m.From, m.Term)
+		//r.logger.Infof("%x's term %d is smaller than %x's term %d", r.id, r.Term, m.From, m.Term)
 		if r.Vote == None || r.Vote == m.From {
+			//r.logger.Infof("%x hasn't voted or has voted %x", r.id, m.From)
 			lastIndex := r.RaftLog.LastIndex()
 			lastLogTerm, _ := r.RaftLog.Term(lastIndex)
 			if lastLogTerm <= m.LogTerm {
@@ -492,7 +503,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 						Reject:  false,
 						Term:    r.Term,
 					})
-					r.logger.Infof("%x send a requestVoteResponseMsg to %x", r.id, m.From)
+					//r.logger.Infof("%x send a requestVoteResponseMsg to %x", r.id, m.From)
 					return
 				}
 			}
