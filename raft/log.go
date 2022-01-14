@@ -89,3 +89,12 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	return 0, nil
 }
+
+// matchTern return if term of i equals term
+func (l *RaftLog) matchTerm(i, term uint64) bool {
+	t, err := l.Term(i)
+	if err != nil {
+		return false
+	}
+	return t == term
+}

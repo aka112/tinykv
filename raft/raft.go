@@ -146,6 +146,11 @@ type Raft struct {
 	// valid message from current leader when it is a follower.
 	electionElapsed int
 
+	// randomizedElectionTimeout is a random number between
+	// [electiontimeout, 2 * electiontimeout - 1]. It gets reset
+	// when raft changes its state to follower or candidate.
+	randomizedElectionTimeout int
+
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
 	// (https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
@@ -169,26 +174,48 @@ func newRaft(c *Config) *Raft {
 	}
 	// Your Code Here (2A).
 	raftLog := newLog(c.Storage)
-	hardState, _, err := c.Storage.InitialState()
-	if err != nil {
-		panic(err)
+	hardState, confState, err1 := c.Storage.InitialState()
+	if err1 != nil {
+		panic(err1)
 	}
 	r := &Raft{
-		id:               c.ID,
-		Term:             hardState.GetTerm(),
-		Vote:             hardState.GetVote(),
-		RaftLog:          raftLog,
-		Prs:              map[uint64]*Progress{},
-		State:            StateFollower,
-		votes:            map[uint64]bool{},
-		msgs:             []pb.Message{},
-		Lead:             None,
-		heartbeatTimeout: c.HeartbeatTick,
-		electionTimeout:  c.ElectionTick,
-		electionElapsed:  0,
-		heartbeatElapsed: 0,
-		logger:           log.New(),
+		id:                        c.ID,
+		Term:                      hardState.GetTerm(),
+		Vote:                      hardState.GetVote(),
+		RaftLog:                   raftLog,
+		Prs:                       map[uint64]*Progress{},
+		State:                     StateFollower,
+		votes:                     map[uint64]bool{},
+		msgs:                      []pb.Message{},
+		Lead:                      None,
+		heartbeatTimeout:          c.HeartbeatTick,
+		electionTimeout:           c.ElectionTick,
+		randomizedElectionTimeout: c.ElectionTick,
+		electionElapsed:           0,
+		heartbeatElapsed:          0,
+		logger:                    log.New(),
 	}
+	raftLog.committed = hardState.Commit // TODO judge the hardState.Commit
+	nodes := confState.GetNodes()
+	if c.peers == nil {
+		c.peers = nodes
+	}
+	if c.Applied > 0 {
+		if c.Applied >= raftLog.applied && c.Applied <= raftLog.committed {
+			raftLog.applied = c.Applied
+		}
+	}
+	lastLogIndex := r.RaftLog.LastIndex()
+	for k := range r.Prs {
+		if k != r.id {
+			r.Prs[k].Next = lastLogIndex + 1
+			r.Prs[k].Match = 0
+		} else {
+			r.Prs[k].Next = lastLogIndex + 1
+			r.Prs[k].Match = lastLogIndex + 1
+		}
+	}
+	r.becomeFollower(r.Term, None)
 	return r
 }
 
@@ -246,7 +273,7 @@ func (r *Raft) tick() {
 		}
 	} else {
 		r.electionElapsed++
-		if r.electionElapsed >= r.electionTimeout {
+		if r.electionElapsed >= r.randomizedElectionTimeout {
 			r.electionElapsed = 0
 			if err := r.Step(pb.Message{
 				MsgType: pb.MessageType_MsgHup,
@@ -296,8 +323,19 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	r.Prs = map[uint64]*Progress{}
-
+	r.Lead = r.id
+	for k := range r.Prs {
+		r.Prs[k].Next = r.Prs[k].Match + 1
+	}
+	err := r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		To:      r.id,
+		From:    r.id,
+		Entries: nil,
+	})
+	if err != nil {
+		return
+	}
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -306,15 +344,115 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+		err := r.stepFollower(m)
+		if err != nil {
+			return err
+		}
 	case StateCandidate:
+		err := r.stepCandidate(m)
+		if err != nil {
+			return err
+		}
 	case StateLeader:
+		err := r.stepLeader(m)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (r *Raft) stepLeader(m pb.Message) error {
+	switch m.MsgType {
+	case pb.MessageType_MsgBeat:
+		r.broadcastHeartBeat()
+		return nil
+	}
+	return nil
+}
+
+func (r *Raft) stepFollower(m pb.Message) error {
+	return nil
+}
+
+func (r *Raft) stepCandidate(m pb.Message) error {
+	return nil
+}
+
+func (r *Raft) broadcastHeartBeat() {
+	for id := range r.Prs {
+		commit := min(r.Prs[id].Match, r.RaftLog.committed)
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgHeartbeat,
+			To:      id,
+			From:    r.id,
+			Commit:  commit,
+		})
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	// Reply false if term < currentTerm (§5.1)
+	if m.Term > r.Term {
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    m.To,
+			Index:   r.RaftLog.committed,
+			Reject:  true,
+		})
+		return
+	}
+	if r.State != StateFollower {
+		r.becomeFollower(m.Term, m.From)
+	}
+	r.electionElapsed = 0
+	rl := r.RaftLog
+	if !rl.matchTerm(m.Index, m.LogTerm) {
+		//Reply false if log doesn’t contain an entry at prevLogIndex
+		//whose term matches prevLogTerm (§5.3)
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    m.To,
+			Index:   m.Index - 1, //TODO 只递减1可能效率不高
+			Reject:  true,
+		})
+		return
+	} else {
+		lastnewi := m.Index + uint64(len(m.Entries))
+		//find conflicts
+		var ci uint64
+		for _, ne := range m.Entries {
+			if !rl.matchTerm(ne.Index, ne.Term) {
+				//If an existing entry conflicts with a new one (same index
+				//but different terms), delete the existing entry and all that
+				//follow it (§5.3)
+				ci := ne.Index
+				rl.entries = rl.entries[:ci]
+				rl.stabled = min(rl.stabled, ci-1)
+				break
+			}
+		}
+		// Append any new entries not already in the log
+		offset := m.Index + 1
+		for i := ci - offset; i < uint64(len(m.Entries)); i++ {
+			rl.entries = append(rl.entries, *m.Entries[i])
+		}
+		//If leaderCommit > commitIndex, set commitIndex =
+		//min(leaderCommit, index of last new entry)
+		if m.Commit > rl.committed {
+			rl.committed = min(m.Commit, lastnewi)
+		}
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			To:      m.From,
+			From:    m.To,
+			Index:   m.Index,
+		})
+	}
 }
 
 // handleHeartbeat handle Heartbeat RPC request
