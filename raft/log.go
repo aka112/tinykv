@@ -133,24 +133,28 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if i > l.LastIndex() {
+		return 0, nil
+	}
 	if len(l.entries) > 0 && i >= l.firstIndex {
 		return l.entries[i-l.firstIndex].Term, nil
 	}
-	term, err := l.storage.Term(i)
-	if err != nil {
-		return 0, err
-	}
-	if term == 0 {
-		if len(l.entries) > 0 {
-			return l.entries[i].Term, nil
-		}
-	}
-	return term, err
+	//term, err := l.storage.Term(i)
+	//if err != nil {
+	//	return 0, err
+	//}
+	//if term == 0 {
+	//	if len(l.entries) > 0 {
+	//		return l.entries[i].Term, nil
+	//	}
+	//}
+	return l.storage.Term(i)
 }
 
 // matchTern return if term of i equals term
 func (l *RaftLog) matchTerm(i, term uint64) bool {
 	t, err := l.Term(i)
+	//log.Infof("term is:%d", t)
 	if err != nil {
 		return false
 	}

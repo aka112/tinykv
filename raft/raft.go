@@ -181,8 +181,6 @@ func newRaft(c *Config) *Raft {
 	}
 	r := &Raft{
 		id:               c.ID,
-		Term:             hardState.GetTerm(),
-		Vote:             hardState.GetVote(),
 		RaftLog:          raftLog,
 		Prs:              map[uint64]*Progress{},
 		State:            StateFollower,
@@ -200,9 +198,7 @@ func newRaft(c *Config) *Raft {
 		c.peers = nodes
 	}
 	if c.Applied > 0 {
-		if c.Applied >= raftLog.applied && c.Applied <= raftLog.committed {
-			raftLog.applied = c.Applied
-		}
+		raftLog.applied = c.Applied
 	}
 	lastLogIndex := r.RaftLog.LastIndex()
 	for _, peer := range c.peers {
@@ -219,8 +215,8 @@ func newRaft(c *Config) *Raft {
 		}
 	}
 	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
-	r.becomeFollower(r.Term, None)
-	r.RaftLog.committed = hardState.GetCommit()
+	r.becomeFollower(0, None)
+	r.Vote, r.Term, r.RaftLog.committed = hardState.GetVote(), hardState.GetTerm(), hardState.GetCommit()
 	return r
 }
 
@@ -231,15 +227,16 @@ func (r *Raft) sendAppend(to uint64) bool {
 	pr := r.Prs[to]
 	m := pb.Message{}
 	m.To = to
-	log.Infof("%d's next:%d", to, pr.Next)
+	//log.Infof("%d's next:%d", to, pr.Next)
 	var term uint64
-	if pr.Next < r.RaftLog.LastIndex() {
-		term, _ = r.RaftLog.Term(pr.Next - 1)
-		m.Index = pr.Next - 1
-	} else {
-		m.Index = r.RaftLog.LastIndex()
-		term, _ = r.RaftLog.Term(m.Index)
-	}
+	log.Infof("%+v  lastIndex:%d", r.RaftLog.entries, r.RaftLog.LastIndex())
+	//if pr.Next <= r.RaftLog.LastIndex() {
+	term, _ = r.RaftLog.Term(pr.Next - 1)
+	m.Index = pr.Next - 1
+	//} else {
+	//	m.Index = r.RaftLog.LastIndex()
+	//	term, _ = r.RaftLog.Term(m.Index)
+	//}
 	m.LogTerm = term
 	//ents := r.RaftLog.nextEnts()
 	ents := r.RaftLog.entries
@@ -247,15 +244,17 @@ func (r *Raft) sendAppend(to uint64) bool {
 		return false
 	}
 	var ents1 []*pb.Entry
-	for _, val := range ents {
-		ents1 = append(ents1, &val)
+	n := uint64(len(ents))
+	for i := m.Index - r.RaftLog.firstIndex + 1; i < n; i++ {
+		ents1 = append(ents1, &ents[i])
 	}
 	m.MsgType = pb.MessageType_MsgAppend
-	log.Infof("m.Index :::%d", m.Index)
+	m.Term = r.Term
 	m.Entries = ents1
 	m.From = r.id
 	m.Commit = r.RaftLog.committed
 	r.msgs = append(r.msgs, m)
+	log.Infof("%d send append id:%d", r.id, m.Index)
 	return true
 }
 
@@ -358,17 +357,18 @@ func (r *Raft) becomeLeader() {
 	lastIndex := r.RaftLog.LastIndex()
 	for k := range r.Prs {
 		if k == r.id {
-			r.Prs[k].Match = lastIndex
-			r.Prs[k].Next = lastIndex + 1
+			r.Prs[k].Match = lastIndex + 1
+			r.Prs[k].Next = lastIndex + 2
 		} else {
 			//log.Infof("%d's lastIndex is %d", r.id, r.Prs[k].Match)
 			r.Prs[k].Next = lastIndex + 1
+			r.Prs[k].Match = 0
 		}
 		//log.Infof("%d's next is %d", k, r.Prs[k].Next)
 	}
 	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
 		Term:  r.Term,
-		Index: r.RaftLog.LastIndex() + 1,
+		Index: lastIndex + 1,
 	})
 	for peer := range r.Prs {
 		if peer == r.id {
@@ -496,11 +496,13 @@ func (r *Raft) handleMsgBeat() {
 func (r *Raft) handleMsgPropose(m pb.Message) {
 	r.logger.Infof("%x is handling MsgPropose.", r.id)
 	lastIndex := r.RaftLog.LastIndex()
+	//log.Infof("len is %d", len(m.Entries))
 	for i, ent := range m.Entries {
 		ent.Term = r.Term
 		ent.Index = lastIndex + uint64(i) + 1
 		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 	}
+	log.Infof("%+v", r.RaftLog.entries)
 	//if len(r.RaftLog.entries) > 0 {
 	//	log.Info("Successfully added.")
 	//}
@@ -518,9 +520,7 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 
 func (r *Raft) handleRequestVote(m pb.Message) {
 	if r.Term <= m.Term {
-		r.logger.Infof("%x's term %d is smaller than %x's term %d", r.id, r.Term, m.From, m.Term)
 		if r.Vote == None || r.Vote == m.From {
-			r.logger.Infof("%x hasn't voted or has voted %x", r.id, m.From)
 			lastIndex := r.RaftLog.LastIndex()
 			lastLogTerm, _ := r.RaftLog.Term(lastIndex)
 			if lastLogTerm <= m.LogTerm {
@@ -534,7 +534,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 						Reject:  false,
 						Term:    r.Term,
 					})
-					r.logger.Infof("%x send a requestVoteResponseMsg to %x", r.id, m.From)
+					r.logger.Infof("%x vote to %x", r.id, m.From)
 					return
 				}
 			}
@@ -575,6 +575,7 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
+	log.Infof("node %d received append index : %d", r.id, m.Index)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
@@ -585,6 +586,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	lastIndex := rl.LastIndex()
 	if lastIndex < m.Index {
 		r.sendAppendResponse(m.From, lastIndex+1, true, None)
+		return
 	}
 	if !rl.matchTerm(m.Index, m.LogTerm) {
 		//Reply false if log doesn’t contain an entry at prevLogIndex
@@ -594,47 +596,63 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	} else {
 		lastnewi := m.Index + uint64(len(m.Entries))
 		//find conflicts
+		//If an existing entry conflicts with a new one (same index
+		//but different terms), delete the existing entry and all that
+		//follow it (§5.3)
 		var ci uint64
 		for _, ne := range m.Entries {
+			if ne.Index >= rl.LastIndex() {
+				//log.Infof("index is %d", ne.Index)
+				ci = ne.Index
+				break
+			}
 			if !rl.matchTerm(ne.Index, ne.Term) {
-				//If an existing entry conflicts with a new one (same index
-				//but different terms), delete the existing entry and all that
-				//follow it (§5.3)
-				ci := ne.Index
-				rl.entries = rl.entries[:ci]
-				rl.stabled = min(rl.stabled, ci-1)
+				ci = ne.Index
 				break
 			}
 		}
-		// Append any new entries not already in the log
-		offset := m.Index + 1
-		for i := ci - offset; i < uint64(len(m.Entries)); i++ {
-			rl.entries = append(rl.entries, *m.Entries[i])
+		if ci != 0 {
+			rl.stabled = ci - 1
+			rl.entries = rl.entries[:rl.stabled]
+			// Append any new entries not already in the log
+			offset := m.Index + 1
+			for i := ci - offset; i < uint64(len(m.Entries)); i++ {
+				rl.entries = append(rl.entries, *m.Entries[i])
+			}
 		}
 		//If leaderCommit > commitIndex, set commitIndex =
 		//min(leaderCommit, index of last new entry)
 		if m.Commit > rl.committed {
 			rl.committed = min(m.Commit, lastnewi)
 		}
-		log.Infof("send response index is %d", m.Index)
+		log.Infof("node %d send success response to node %d", r.id, m.From)
 		r.sendAppendResponse(m.From, m.Index, false, None)
 	}
 }
 
 func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
-	log.Infof("response's index is %d", m.Index)
+	//log.Infof("response's index is %d", m.Index)
+	log.Infof("%d is handling appendEntriesResponse from %d", r.id, m.From)
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 	}
 	if m.Reject {
 		if m.LogTerm == None {
-			r.Prs[m.From].Next = m.Index
+			log.Infof("m.id is %d", m.Index)
+			r.Prs[m.From].Next--
 			r.sendAppend(m.From)
 		} else {
-			r.Prs[m.From].Next = m.Index
+			log.Infof("m.id is %d", m.Index)
+			r.Prs[m.From].Next--
 			r.sendAppend(m.From)
 		}
 	} else {
+		log.Infof("node %d received a success response.", r.id)
+		term, _ := r.RaftLog.Term(m.Index)
+		log.Infof("m.index is %d term is %d r.Term is %d", m.Index, term, r.Term)
+		if term != r.Term || m.Index < r.Prs[m.From].Next {
+			return
+		}
 		r.Prs[m.From].Match = m.Index
 		r.Prs[m.From].Next = m.Index + 1
 		log.Infof("%d's next is: %d. match is %d", m.From, r.Prs[m.From].Next, r.Prs[m.From].Match)
@@ -643,6 +661,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 }
 
 func (r *Raft) leaderCommit(m pb.Message) {
+	log.Infof("leader maybe is committing")
 	if m.Index > r.RaftLog.committed {
 		for r.RaftLog.committed < r.RaftLog.LastIndex() {
 			newCommit := r.RaftLog.committed + 1
@@ -652,18 +671,19 @@ func (r *Raft) leaderCommit(m pb.Message) {
 					continue
 				} else {
 					if r.Prs[k].Match >= newCommit {
+						//log.Infof("%d's match is %d", k, r.Prs[k].Match)
 						cnt++
 					}
 				}
 			}
+			//log.Infof("cnt : %d", cnt)
 			if cnt > len(r.Prs)/2 {
 				r.RaftLog.committed++
 				for k, _ := range r.Prs {
 					if k == r.id {
 						continue
-					} else {
-						r.sendAppend(k)
 					}
+					r.sendAppend(k)
 				}
 			} else {
 				break

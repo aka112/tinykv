@@ -17,6 +17,7 @@ package raft
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -161,6 +162,7 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	if sm1.Term != 2 {
 		t.Errorf("term = %d, want 2", sm1.Term)
 	}
+	//log.Info("1 failed the first campaign")
 
 	// Node 1 campaigns again with a higher term. This time it succeeds.
 	n.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
@@ -170,6 +172,7 @@ func TestLeaderElectionOverwriteNewerLogs2AB(t *testing.T) {
 	if sm1.Term != 3 {
 		t.Errorf("term = %d, want 3", sm1.Term)
 	}
+	//log.Info("1 succeeded in the second campaign")
 
 	// Now all nodes agree on a log entry with term 1 at index 1 (and
 	// term 3 at index 2).
@@ -270,8 +273,10 @@ func TestLogReplication2AB(t *testing.T) {
 			4,
 		},
 	}
-
+	cnt := 0
 	for i, tt := range tests {
+		log.Infof("%d test", cnt)
+		cnt++
 		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 
 		for _, m := range tt.msgs {
@@ -1541,6 +1546,7 @@ func votedWithConfig(configFunc func(*Config), vote, term uint64) *Raft {
 	}
 	sm := newRaft(cfg)
 	sm.Term = term
+	//log.Infof("%+v", sm)
 	return sm
 }
 
