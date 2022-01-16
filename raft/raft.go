@@ -562,7 +562,8 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
-	log.Infof("节点%d 收到了节点%d 发送的append [logTerm:%d, index:%d, commit:%d]", r.id, m.From, m.LogTerm, m.Index, m.Commit)
+	log.Infof("node %d received", r.id)
+	//log.Infof("节点%d 收到了节点%d 发送的append [logTerm:%d, index:%d, commit:%d]", r.id, m.From, m.LogTerm, m.Index, m.Commit)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return

@@ -27,6 +27,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap/log"
 	"reflect"
 	"sort"
 	"testing"
@@ -585,6 +586,7 @@ func TestFollowerCheckMessageType_MsgAppend2AB(t *testing.T) {
 		{ents[1].Term + 1, ents[1].Index + 1, true},
 	}
 	for i, tt := range tests {
+		log.Info("test!")
 		storage := NewMemoryStorage()
 		storage.Append(ents)
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
@@ -592,7 +594,11 @@ func TestFollowerCheckMessageType_MsgAppend2AB(t *testing.T) {
 		r.becomeFollower(2, 2)
 		msgs := r.readMessages() // clear message
 
+		log.Info("test!")
+
 		r.Step(pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppend, Term: 2, LogTerm: tt.term, Index: tt.index})
+
+		log.Info("test!")
 
 		msgs = r.readMessages()
 		if len(msgs) != 1 {
