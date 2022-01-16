@@ -221,7 +221,6 @@ func (r *Raft) sendAppend(to uint64) bool {
 	m := pb.Message{}
 	m.To = to
 	var term uint64
-	log.Infof("pr.next is %d", pr.Next)
 	term, _ = r.RaftLog.Term(pr.Next - 1)
 	m.Index = pr.Next - 1
 	m.LogTerm = term
@@ -292,13 +291,14 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	r.msgs = append(r.msgs, m)
 }
 
-//func (r *Raft) sendHeartBeatResponse(to uint64, reject bool) {
-//	r.msgs = append(r.msgs, pb.Message{
-//		MsgType: pb.MessageType_MsgHeartbeatResponse,
-//		To:      to,
-//		Reject:  reject,
-//	})
-//}
+func (r *Raft) sendHeartBeatResponse(to uint64, reject bool) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		To:      to,
+		From:    r.id,
+		Reject:  reject,
+	})
+}
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
@@ -425,6 +425,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgBeat:
 		r.brstHeartBeat()
 	case pb.MessageType_MsgHeartbeatResponse:
+		if r.Prs[m.From].Match < r.RaftLog.committed {
+			r.sendAppend(m.From)
+		}
 		//r.sendAppend(m.From)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
@@ -503,6 +506,7 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	lastIndex := r.RaftLog.LastIndex()
 	for i, ent := range m.Entries {
 		ent.Term = r.Term
+		ent.Term = r.Term
 		ent.Index = lastIndex + uint64(i) + 1
 		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 	}
@@ -562,8 +566,6 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
-	log.Infof("node %d received", r.id)
-	//log.Infof("节点%d 收到了节点%d 发送的append [logTerm:%d, index:%d, commit:%d]", r.id, m.From, m.LogTerm, m.Index, m.Commit)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
@@ -587,28 +589,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		//If an existing entry conflicts with a new one (same index
 		//but different terms), delete the existing entry and all that
 		//follow it (§5.3)
-		//var ci uint64
-		//for k := range m.Entries {
-		//	if m.Entries[k].Index >= rl.LastIndex() {
-		//		ci = m.Entries[k].Index
-		//		break
-		//	}
-		//	if !rl.matchTerm(m.Entries[k].Index, m.Entries[k].Term) {
-		//		ci = m.Entries[k].Index
-		//		break
-		//	}
-		//}
-		//if ci != 0 {
-		//	log.Infof("update stabled!")
-		//	rl.stabled = ci - 1
-		//	rl.entries[ci] =
-		//	rl.entries = rl.entries[:ci-rl.firstIndex]
-		//	// Append any new entries not already in the log
-		//	offset := m.Index + 1
-		//	for i := ci - offset; i < uint64(len(m.Entries)); i++ {
-		//		rl.entries = append(rl.entries, *m.Entries[i])
-		//	}
-		//}
 		for i, entry := range m.Entries {
 			if entry.Index < rl.firstIndex {
 				continue
@@ -619,6 +599,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 					rl.entries[idx] = *entry
 					rl.entries = rl.entries[:idx+1]
 					rl.stabled = min(rl.stabled, entry.Index-1)
+					n := len(m.Entries)
+					for j := i + 1; j < n; j++ {
+						rl.entries = append(rl.entries, *m.Entries[j])
+					}
+					rl.entries = rl.entries[:len(rl.entries)]
 				}
 			} else {
 				n := len(m.Entries)
@@ -628,13 +613,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				break
 			}
 		}
-		log.Infof("rl.entries are %+v", rl.entries)
 		//If leaderCommit > commitIndex, set commitIndex =
 		//min(leaderCommit, index of last new entry)
 		if m.Commit > rl.committed {
 			rl.committed = min(m.Commit, lastnewi)
 		}
-		log.Infof("node %d's stabled is %d", r.id, r.RaftLog.stabled)
 		r.sendAppendResponse(m.From, rl.LastIndex(), false, None)
 	}
 }
@@ -652,7 +635,6 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 			r.sendAppend(m.From)
 		}
 	} else {
-		log.Infof("node %d received appResp from node %d with index %d", r.id, m.From, m.Index)
 		term, _ := r.RaftLog.Term(m.Index)
 		if term != r.Term || m.Index < r.Prs[m.From].Next {
 			return
@@ -664,12 +646,11 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 }
 
 func (r *Raft) leaderCommit(m pb.Message) {
-	log.Infof("leader maybe is committing")
 	if m.Index > r.RaftLog.committed {
 		for r.RaftLog.committed < r.RaftLog.LastIndex() {
 			newCommit := r.RaftLog.committed + 1
 			cnt := 1
-			for k, _ := range r.Prs {
+			for k := range r.Prs {
 				if k == r.id {
 					continue
 				} else {
@@ -680,7 +661,7 @@ func (r *Raft) leaderCommit(m pb.Message) {
 			}
 			if cnt > len(r.Prs)/2 {
 				r.RaftLog.committed++
-				for k, _ := range r.Prs {
+				for k := range r.Prs {
 					if k == r.id {
 						continue
 					}
@@ -696,13 +677,13 @@ func (r *Raft) leaderCommit(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	//if r.Term > m.Term {
-	//	r.sendHeartBeatResponse(m.From, true)
-	//}
-	//r.becomeFollower(m.Term, m.From)
-	//r.electionElapsed = 0
-	//r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
-	//r.sendHeartBeatResponse(m.From, false)
+	if r.Term > m.Term {
+		r.sendHeartBeatResponse(m.From, true)
+	}
+	r.becomeFollower(m.Term, m.From)
+	r.electionElapsed = 0
+	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+	r.sendHeartBeatResponse(m.From, false)
 }
 
 // handleSnapshot handle Snapshot RPC request

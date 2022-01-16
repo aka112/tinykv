@@ -120,12 +120,12 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if len(l.entries) > 0 {
+		return l.entries[len(l.entries)-1].Index
+	}
 	lastIndex, err := l.storage.LastIndex()
 	if err != nil {
 		return 0
-	}
-	if len(l.entries) > 0 {
-		return max(lastIndex, l.entries[len(l.entries)-1].Index)
 	}
 	return lastIndex
 }
@@ -133,10 +133,11 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	log.Infof("now i is %d firstIndex is %d l.entries len is %d", i, l.firstIndex, len(l.entries))
 	if i > l.LastIndex() {
 		return 0, nil
 	}
-	if len(l.entries) > 0 && i >= l.firstIndex {
+	if len(l.entries) > 0 && i >= l.firstIndex && i <= l.LastIndex() {
 		return l.entries[i-l.firstIndex].Term, nil
 	}
 	//term, err := l.storage.Term(i)
@@ -159,4 +160,12 @@ func (l *RaftLog) matchTerm(i, term uint64) bool {
 		return false
 	}
 	return t == term
+}
+
+func (l *RaftLog) RemoveEntriesAfter(lo uint64) {
+	l.stabled = min(l.stabled, lo-1)
+	if lo-l.firstIndex >= uint64(len(l.entries)) {
+		return
+	}
+	l.entries = l.entries[:lo-l.firstIndex]
 }
