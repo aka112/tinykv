@@ -284,6 +284,7 @@ func TestLogReplication2AB(t *testing.T) {
 		}
 
 		for j, x := range tt.network.peers {
+			log.Infof("j == %d", j)
 			sm := x.(*Raft)
 
 			if sm.RaftLog.committed != tt.wcommitted {
