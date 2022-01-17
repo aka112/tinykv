@@ -16,7 +16,6 @@ package raft
 
 import (
 	"bytes"
-	"github.com/pingcap-incubator/tinykv/log"
 	"reflect"
 	"testing"
 
@@ -166,13 +165,11 @@ func TestRawNodeStart2AC(t *testing.T) {
 	}
 	rawNode.Campaign()
 	rd := rawNode.Ready()
-	log.Infof("%+v", rd.CommittedEntries)
 	storage.Append(rd.Entries)
 	rawNode.Advance(rd)
 
 	rawNode.Propose([]byte("foo"))
 	rd = rawNode.Ready()
-	log.Infof("%+v", rd.CommittedEntries)
 	if el := len(rd.Entries); el != len(rd.CommittedEntries) || el != 1 {
 		t.Errorf("got len(Entries): %+v, len(CommittedEntries): %+v, want %+v", el, len(rd.CommittedEntries), 1)
 	}

@@ -178,11 +178,11 @@ func newRaft(c *Config) *Raft {
 		panic(err1)
 	}
 	r := &Raft{
-		id:               c.ID,
-		RaftLog:          raftLog,
-		Prs:              map[uint64]*Progress{},
-		votes:            map[uint64]bool{},
-		msgs:             []pb.Message{},
+		id:      c.ID,
+		RaftLog: raftLog,
+		Prs:     map[uint64]*Progress{},
+		votes:   map[uint64]bool{},
+		//msgs:             make([]pb.Message, 0), msgs不用初始化
 		heartbeatTimeout: c.HeartbeatTick,
 		electionTimeout:  c.ElectionTick,
 	}
@@ -338,7 +338,6 @@ func (r *Raft) tick() {
 			}
 		}
 	}
-
 }
 
 // becomeFollower transform this peer's state to Follower
@@ -400,6 +399,9 @@ func (r *Raft) becomeLeader() {
 			continue
 		}
 		r.sendAppend(peer)
+	}
+	if len(r.Prs) == 1 {
+		r.RaftLog.committed = r.Prs[r.id].Match
 	}
 }
 
