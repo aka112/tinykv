@@ -2,6 +2,9 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -41,6 +44,28 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
+	}
+	if d.RaftGroup.HasReady() {
+		rd := d.RaftGroup.Ready()
+
+		_, err := d.peerStorage.SaveReadyState(&rd)
+		if err != nil {
+			return
+		}
+
+		d.Send(d.ctx.trans, rd.Messages)
+
+		if len(rd.CommittedEntries) > 0 {
+			kvWB := new(engine_util.WriteBatch)
+			for _, ent := range rd.CommittedEntries {
+				d.applyEntry(&ent)
+			}
+			d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+		}
+
+		d.RaftGroup.Advance(rd)
 	}
 	// Your Code Here (2B).
 }
@@ -107,11 +132,33 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
+func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
+	data, err := msg.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	p := &proposal{
+		index: d.nextProposalIndex(),
+		term:  d.Term(),
+		cb:    cb,
+	}
+	d.proposals = append(d.proposals, p)
+	err = d.RaftGroup.Propose(data)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
 		cb.Done(ErrResp(err))
 		return
+	}
+	if msg.AdminRequest != nil {
+		// TODO handle AdminRequest
+	} else if len(msg.Requests) != 0 {
+		d.proposeRequest(msg, cb)
 	}
 	// Your Code Here (2B).
 }
@@ -549,6 +596,10 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
 		}
 	}
+}
+
+func (d *peerMsgHandler) applyEntry(p *eraftpb.Entry) {
+	// TODO applyEntry()
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {
