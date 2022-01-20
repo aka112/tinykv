@@ -418,7 +418,7 @@ func TestManyPartitionsOneClient2B(t *testing.T) {
 	GenericTest(t, "2B", 1, false, false, true, -1, false, false)
 }
 
-func TestManyPartitionsManyClients2B(t *testing.T) {
+func TestManyPartitionsManyClients2B(t *testing.T) { //TODO FAIL
 	// Test: partitions, many clients (2B) ...
 	GenericTest(t, "2B", 5, false, false, true, -1, false, false)
 }
@@ -438,7 +438,7 @@ func TestPersistConcurrentUnreliable2B(t *testing.T) {
 	GenericTest(t, "2B", 5, true, true, false, -1, false, false)
 }
 
-func TestPersistPartition2B(t *testing.T) {
+func TestPersistPartition2B(t *testing.T) { //TODO FAIL
 	// Test: restarts, partitions, many clients (2B) ...
 	GenericTest(t, "2B", 5, false, true, true, -1, false, false)
 }

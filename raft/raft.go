@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -350,7 +349,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Lead = lead
 	r.State = StateFollower
 	r.votes = map[uint64]bool{}
-	log.Infof("%x 成为 follower 在任期 %d", r.id, r.Term)
+	//log.Infof("%x 成为 follower 在任期 %d", r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -365,7 +364,7 @@ func (r *Raft) becomeCandidate() {
 	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.electionElapsed = 0
 	r.State = StateCandidate
-	log.Infof("%x 成为 candidate 在任期 %d", r.id, r.Term)
+	//log.Infof("%x 成为 candidate 在任期 %d", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -375,7 +374,7 @@ func (r *Raft) becomeLeader() {
 	if r.State == StateFollower {
 		panic("invalid transition [follower -> leader]")
 	}
-	log.Infof("%x 成为 leader 在任期 %d", r.id, r.Term)
+	//log.Infof("%x 成为 leader 在任期 %d", r.id, r.Term)
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0

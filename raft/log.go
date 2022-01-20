@@ -134,7 +134,7 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	log.Infof("now i is %d firstIndex is %d l.entries len is %d", i, l.firstIndex, len(l.entries))
+	//log.Infof("now i is %d firstIndex is %d l.entries len is %d", i, l.firstIndex, len(l.entries))
 	if i > l.LastIndex() {
 		return 0, nil
 	}
