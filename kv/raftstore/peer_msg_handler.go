@@ -56,6 +56,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.Send(d.ctx.trans, rd.Messages)
 
 		if len(rd.CommittedEntries) > 0 {
+			oldProposals := d.proposals
 			kvWB := new(engine_util.WriteBatch)
 			for _, ent := range rd.CommittedEntries {
 				d.applyEntry(&ent)
@@ -63,6 +64,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			d.peerStorage.applyState.AppliedIndex = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 			kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+			if len(oldProposals) > len(d.proposals) {
+				proposals := make([]*proposal, len(d.proposals))
+				copy(proposals, d.proposals)
+				d.proposals = proposals
+			}
 		}
 
 		d.RaftGroup.Advance(rd)
@@ -155,9 +161,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-	if msg.AdminRequest != nil {
-		// TODO handle AdminRequest
-	} else if len(msg.Requests) != 0 {
+	if len(msg.Requests) != 0 {
 		d.proposeRequest(msg, cb)
 	}
 	// Your Code Here (2B).
@@ -608,52 +612,54 @@ func (d *peerMsgHandler) applyEntry(ent *eraftpb.Entry) {
 	if len(msg.Requests) == 0 {
 		return
 	}
+	req := msg.Requests[0]
 	kvWB := new(engine_util.WriteBatch)
-	for _, req := range msg.Requests {
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Get:
-		case raft_cmdpb.CmdType_Snap:
-		case raft_cmdpb.CmdType_Put:
-			kvWB.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
-		case raft_cmdpb.CmdType_Delete:
-			kvWB.DeleteCF(req.Delete.Cf, req.Delete.Key)
-		}
-		var i int
-		for i = 0; i < len(d.proposals) && d.proposals[i].index < ent.Index; i++ {
-			d.proposals[i].cb.Done(ErrResp(&util.ErrStaleCommand{}))
-		}
-		d.proposals = d.proposals[i:]
-		if len(d.proposals) > 0 && d.proposals[0].index == ent.Index {
-			p := d.proposals[0]
-			if p.term != ent.Term {
-				NotifyStaleReq(ent.Term, p.cb)
-			} else {
-				//TODO resp
-				resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-				switch req.CmdType {
-				case raft_cmdpb.CmdType_Get:
-					value, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, req.Get.Cf, req.Get.Key)
-					resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Get,
-						Get: &raft_cmdpb.GetResponse{Value: value}}}
-				case raft_cmdpb.CmdType_Put:
-					resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Put,
-						Put: &raft_cmdpb.PutResponse{}}}
-				case raft_cmdpb.CmdType_Delete:
-					resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Delete,
-						Delete: &raft_cmdpb.DeleteResponse{}}}
-				case raft_cmdpb.CmdType_Snap:
-					if msg.Header.RegionEpoch.GetVersion() != d.Region().RegionEpoch.GetVersion() {
-						p.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
-						return
-					}
-					resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Snap,
-						Snap: &raft_cmdpb.SnapResponse{Region: d.Region()}}}
-					p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+	//log.Infof("Handling message[type:%v]", req.CmdType)
+	switch req.CmdType {
+	//case raft_cmdpb.CmdType_Get:
+	//case raft_cmdpb.CmdType_Snap:
+	case raft_cmdpb.CmdType_Put:
+		//log.Infof("Putting CF %v[key:%s, value:%s]", req.Put.Cf, req.Put.Key, req.Put.Value)
+		kvWB.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
+	case raft_cmdpb.CmdType_Delete:
+		//log.Infof("Deleting CF %v[key:%s]", req.Delete.Cf, req.Delete.Key)
+		kvWB.DeleteCF(req.Delete.Cf, req.Delete.Key)
+	}
+	var i int
+	for i = 0; i < len(d.proposals) && d.proposals[i].index < ent.Index; i++ {
+		d.proposals[i].cb.Done(ErrResp(&util.ErrStaleCommand{}))
+	}
+	d.proposals = d.proposals[i:]
+	if len(d.proposals) > 0 && d.proposals[0].index == ent.Index {
+		p := d.proposals[0]
+		if p.term != ent.Term {
+			NotifyStaleReq(ent.Term, p.cb)
+		} else {
+			//TODO resp
+			resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+			switch req.CmdType {
+			case raft_cmdpb.CmdType_Get:
+				value, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, req.Get.Cf, req.Get.Key)
+				resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Get,
+					Get: &raft_cmdpb.GetResponse{Value: value}}}
+			case raft_cmdpb.CmdType_Put:
+				resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Put,
+					Put: &raft_cmdpb.PutResponse{}}}
+			case raft_cmdpb.CmdType_Delete:
+				resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Delete,
+					Delete: &raft_cmdpb.DeleteResponse{}}}
+			case raft_cmdpb.CmdType_Snap:
+				if msg.Header.RegionEpoch.GetVersion() != d.Region().RegionEpoch.GetVersion() {
+					p.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
+					return
 				}
-				p.cb.Done(resp)
+				resp.Responses = []*raft_cmdpb.Response{{CmdType: raft_cmdpb.CmdType_Snap,
+					Snap: &raft_cmdpb.SnapResponse{Region: d.Region()}}}
+				p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			}
-			d.proposals = d.proposals[1:]
+			p.cb.Done(resp)
 		}
+		d.proposals = d.proposals[1:]
 	}
 	kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 }

@@ -311,16 +311,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if len(entries) == 0 {
 		return nil
 	}
-
-	firstIndex, _ := ps.FirstIndex()
 	newLastIndex := entries[len(entries)-1].Index
-	if newLastIndex < firstIndex {
-		return nil
-	}
-	newFirstIndex := entries[0].Index
-	if newFirstIndex < firstIndex {
-		entries = entries[firstIndex-newFirstIndex:]
-	}
 	regionId := ps.region.GetId()
 	for _, ent := range entries {
 		err := raftWB.SetMeta(meta.RaftLogKey(regionId, ent.Index), &ent)
@@ -329,13 +320,11 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		}
 	}
 	lastIndex, _ := ps.LastIndex()
-	if lastIndex > newLastIndex {
-		for i := newLastIndex + 1; i <= lastIndex; i++ {
-			raftWB.DeleteMeta(meta.RaftLogKey(regionId, i))
-		}
+	for i := newLastIndex + 1; i <= lastIndex; i++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(regionId, i))
 	}
 	ps.raftState.LastIndex = newLastIndex
-	ps.raftState.LastTerm = entries[len(entries)-1].Index
+	ps.raftState.LastTerm = entries[len(entries)-1].Term // 写成index了
 	return nil
 }
 
