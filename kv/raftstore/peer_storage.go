@@ -369,8 +369,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		EndKey:   snapData.Region.GetEndKey(),
 	}
 
+	result := &ApplySnapResult{PrevRegion: ps.region, Region: snapData.Region}
 	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
-	return nil, nil
+	return result, nil
 }
 
 // Save memory states to disk.

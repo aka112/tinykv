@@ -241,9 +241,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 			}
 			panic(err)
 		}
-		if snapshot.Metadata.Index == 0 {
-			panic("need non-empty snapshot")
-		}
+		//if snapshot.Metadata.Index == 0 {
+		//	panic("need non-empty snapshot")
+		//}
 		m.Snapshot = &snapshot
 		m.From = r.id
 	} else {
@@ -472,6 +472,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendEntriesResponse(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -486,6 +488,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -502,6 +506,8 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleMsgRequestVoteResponse(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	}
 	return nil
 }
