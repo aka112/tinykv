@@ -603,7 +603,6 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 }
 
 func (d *peerMsgHandler) applyEntry(ent *eraftpb.Entry) {
-	// TODO applyEntry()
 	msg := new(raft_cmdpb.RaftCmdRequest)
 	err := msg.Unmarshal(ent.Data)
 	if err != nil {
@@ -635,7 +634,6 @@ func (d *peerMsgHandler) applyEntry(ent *eraftpb.Entry) {
 		if p.term != ent.Term {
 			NotifyStaleReq(ent.Term, p.cb)
 		} else {
-			//TODO resp
 			resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Get:

@@ -16,7 +16,9 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
+	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -229,25 +231,42 @@ func (r *Raft) sendAppend(to uint64) bool {
 	pr := r.Prs[to]
 	m := pb.Message{}
 	m.To = to
-	var term uint64
-	term, _ = r.RaftLog.Term(pr.Next - 1)
-	m.Index = pr.Next - 1
-	m.LogTerm = term
-	//ents := r.RaftLog.nextEnts()
-	ents := r.RaftLog.entries
-	if len(ents) == 0 {
-		return false
+	if pr.Next < r.RaftLog.firstIndex {
+		m.MsgType = pb.MessageType_MsgSnapshot
+		snapshot, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Debugf("%d failed to send snapshot to %d because snapshot is temporally unavailable", r.id, to)
+				return false
+			}
+			panic(err)
+		}
+		if snapshot.Metadata.Index == 0 {
+			panic("need non-empty snapshot")
+		}
+		m.Snapshot = &snapshot
+		m.From = r.id
+	} else {
+		var term uint64
+		term, _ = r.RaftLog.Term(pr.Next - 1)
+		m.Index = pr.Next - 1
+		m.LogTerm = term
+		//ents := r.RaftLog.nextEnts()
+		ents := r.RaftLog.entries
+		if len(ents) == 0 {
+			return false
+		}
+		var ents1 []*pb.Entry
+		n := uint64(len(ents))
+		for i := m.Index - r.RaftLog.firstIndex + 1; i < n; i++ {
+			ents1 = append(ents1, &ents[i])
+		}
+		m.MsgType = pb.MessageType_MsgAppend
+		m.Term = r.Term
+		m.Entries = ents1
+		m.From = r.id
+		m.Commit = r.RaftLog.committed
 	}
-	var ents1 []*pb.Entry
-	n := uint64(len(ents))
-	for i := m.Index - r.RaftLog.firstIndex + 1; i < n; i++ {
-		ents1 = append(ents1, &ents[i])
-	}
-	m.MsgType = pb.MessageType_MsgAppend
-	m.Term = r.Term
-	m.Entries = ents1
-	m.From = r.id
-	m.Commit = r.RaftLog.committed
 	r.msgs = append(r.msgs, m)
 	//log.Infof("leader %d sends append[index:%d term:%d] to node %d ", r.id, m.Index, m.Term, m.To)
 	return true
@@ -268,7 +287,7 @@ func (r *Raft) sendAppendResponse(to uint64, index uint64, reject bool, logTerm 
 func (r *Raft) sendRequestVote(to uint64) {
 	logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 	//log.Infof("node %d sends a requestVote[logTerm:%d, index:%d] to node %d.",
-	//r.id, logTerm, r.RaftLog.LastIndex(), to)
+	//	r.id, logTerm, r.RaftLog.LastIndex(), to)
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
 		To:      to,
@@ -363,6 +382,7 @@ func (r *Raft) becomeCandidate() {
 	}
 	r.Term++
 	r.Vote = r.id
+	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true
 	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.electionElapsed = 0
@@ -547,6 +567,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 				if lastLogTerm < m.LogTerm || lastIndex <= m.Index {
 					r.Vote = m.From
 					r.electionElapsed = 0
+					//log.Infof("node %d vote for node %d", r.id, m.From)
 					r.sendRequestVoteResponse(m.From, false)
 					return
 				}
@@ -582,19 +603,12 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
-	//log.Infof("node %d[term:%d， lead:%d] received append[index:%d, term:%d] from leader %d",
-	//r.id, r.Term, r.Lead, m.Index, m.Term, m.From)
+	//log.Infof("node %d received append[index:%d, term:%d] from leader %d", r.id, m.Index, m.Term, m.From)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
 	}
-	//r.becomeFollower(m.Term, m.From)
-	if m.Term > r.Term {
-		r.Term = m.Term
-	}
-	if m.From != r.Lead {
-		r.Lead = m.From
-	}
+	r.becomeFollower(m.Term, m.From)
 	r.electionElapsed = 0
 	rl := r.RaftLog
 	lastIndex := rl.LastIndex()
@@ -665,35 +679,62 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		}
 		r.Prs[m.From].Match = m.Index
 		r.Prs[m.From].Next = m.Index + 1
-		r.leaderCommit(m)
+		r.LeaderCommit()
 	}
 }
 
-func (r *Raft) leaderCommit(m pb.Message) {
-	if m.Index > r.RaftLog.committed {
-		for r.RaftLog.committed < r.RaftLog.LastIndex() {
-			newCommit := r.RaftLog.committed + 1
-			cnt := 1
+//func (r *Raft) leaderCommit(m pb.Message) {
+//	if m.Index > r.RaftLog.committed {
+//		for r.RaftLog.committed < r.RaftLog.LastIndex() {
+//			newCommit := r.RaftLog.committed + 1
+//			cnt := 1
+//			for k := range r.Prs {
+//				if k == r.id {
+//					continue
+//				} else {
+//					if r.Prs[k].Match >= newCommit {
+//						cnt++
+//					}
+//				}
+//			}
+//			if cnt > len(r.Prs)/2 {
+//				//log.Infof("leader %d committed[index:%d].", r.id, r.RaftLog.committed+1)
+//				r.RaftLog.committed++
+//				for k := range r.Prs {
+//					if k == r.id {
+//						continue
+//					}
+//					r.sendAppend(k)
+//				}
+//			} else {
+//				break
+//			}
+//		}
+//	}
+//}
+
+func (r *Raft) LeaderCommit() {
+	match := make(uint64Slice, len(r.Prs))
+	i := 0
+	for _, prs := range r.Prs {
+		match[i] = prs.Match
+		i++
+	}
+	sort.Sort(match)
+	n := match[(len(r.Prs)-1)/2]
+	if n > r.RaftLog.committed {
+		logTerm, err := r.RaftLog.Term(n)
+		if err != nil {
+			panic(err)
+		}
+		if logTerm == r.Term {
+			r.RaftLog.committed = n
+			//log.Infof("leader %d committed[index:%d].", r.id, r.RaftLog.committed)
 			for k := range r.Prs {
 				if k == r.id {
 					continue
-				} else {
-					if r.Prs[k].Match >= newCommit {
-						cnt++
-					}
 				}
-			}
-			if cnt > len(r.Prs)/2 {
-				//log.Infof("leader %d committed[index:%d].", r.id, r.RaftLog.committed+1)
-				r.RaftLog.committed++
-				for k := range r.Prs {
-					if k == r.id {
-						continue
-					}
-					r.sendAppend(k)
-				}
-			} else {
-				break
+				r.sendAppend(k)
 			}
 		}
 	}
@@ -715,6 +756,26 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	meta := m.Snapshot.Metadata
+	sindex := meta.Index
+	if sindex < r.RaftLog.committed {
+		r.sendAppendResponse(m.From, r.RaftLog.committed, false, None)
+		return
+	}
+	r.becomeFollower(max(r.Term, m.Term), m.From)
+	if len(r.RaftLog.entries) > 0 {
+		r.RaftLog.entries = nil
+	}
+	r.RaftLog.firstIndex = sindex + 1
+	r.RaftLog.committed = sindex
+	r.RaftLog.stabled = sindex
+	r.RaftLog.applied = sindex
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.Prs = make(map[uint64]*Progress)
+	for _, peer := range meta.ConfState.Nodes {
+		r.Prs[peer] = &Progress{}
+	}
+	r.sendAppendResponse(m.From, r.RaftLog.LastIndex(), false, None)
 }
 
 // addNode add a new node to raft group
