@@ -231,22 +231,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 	pr := r.Prs[to]
 	m := pb.Message{}
 	m.To = to
-	if pr.Next < r.RaftLog.firstIndex {
-		m.MsgType = pb.MessageType_MsgSnapshot
-		snapshot, err := r.RaftLog.storage.Snapshot()
-		if err != nil {
-			if err == ErrSnapshotTemporarilyUnavailable {
-				log.Debugf("%d failed to send snapshot to %d because snapshot is temporally unavailable", r.id, to)
-				return false
-			}
-			panic(err)
-		}
-		//if snapshot.Metadata.Index == 0 {
-		//	panic("need non-empty snapshot")
-		//}
-		m.Snapshot = &snapshot
-		m.From = r.id
-	} else {
+	var err error
+	m.LogTerm, err = r.RaftLog.Term(pr.Next - 1)
+	if err == nil {
 		var term uint64
 		term, _ = r.RaftLog.Term(pr.Next - 1)
 		m.Index = pr.Next - 1
@@ -266,6 +253,18 @@ func (r *Raft) sendAppend(to uint64) bool {
 		m.Entries = ents1
 		m.From = r.id
 		m.Commit = r.RaftLog.committed
+	} else if err == ErrCompacted {
+		m.MsgType = pb.MessageType_MsgSnapshot
+		snapshot, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Debugf("%d failed to send snapshot to %d because snapshot is temporally unavailable", r.id, to)
+				return false
+			}
+			panic(err)
+		}
+		m.Snapshot = &snapshot
+		m.From = r.id
 	}
 	r.msgs = append(r.msgs, m)
 	//log.Infof("leader %d sends append[index:%d term:%d] to node %d ", r.id, m.Index, m.Term, m.To)
@@ -764,7 +763,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	meta := m.Snapshot.Metadata
 	sindex := meta.Index
-	if sindex < r.RaftLog.committed {
+	if sindex <= r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false, None)
 		return
 	}

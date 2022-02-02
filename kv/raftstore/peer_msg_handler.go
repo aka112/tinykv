@@ -161,11 +161,13 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-	if len(msg.Requests) != 0 {
-		d.proposeRequest(msg, cb)
-	}
+	//if len(msg.Requests) != 0 {
+	//	d.proposeRequest(msg, cb)
+	//}
 	if msg.AdminRequest != nil {
 		d.proposeAdminRequest(msg, cb)
+	} else {
+		d.proposeRequest(msg, cb)
 	}
 	// Your Code Here (2B).
 }

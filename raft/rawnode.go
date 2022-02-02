@@ -169,6 +169,9 @@ func (rn *RawNode) Ready() Ready {
 		rd.HardState = hardSt
 	}
 	rn.Raft.msgs = make([]pb.Message, 0)
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
 	return rd
 }
 
@@ -180,6 +183,9 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 	if len(r.RaftLog.unstableEntries()) > 0 || len(r.RaftLog.nextEnts()) > 0 || len(r.msgs) > 0 {
+		return true
+	}
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
 		return true
 	}
 	return false
@@ -198,6 +204,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	if len(rd.CommittedEntries) > 0 {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
+	rn.Raft.RaftLog.pendingSnapshot = nil
 	rn.Raft.RaftLog.maybeCompact()
 }
 
