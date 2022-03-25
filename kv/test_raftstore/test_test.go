@@ -569,13 +569,9 @@ func TestBasicConfChange3B(t *testing.T) {
 
 	// add peer (2, 2) to region 1
 	cluster.MustAddPeer(1, NewPeer(2, 2))
-	log.Infof("11")
 	cluster.MustPut([]byte("k2"), []byte("v2"))
-	log.Infof("22")
 	cluster.MustGet([]byte("k2"), []byte("v2"))
-	log.Infof("33")
 	MustGetEqual(cluster.engines[2], []byte("k1"), []byte("v1"))
-	log.Infof("44")
 	MustGetEqual(cluster.engines[2], []byte("k2"), []byte("v2"))
 
 	epoch := cluster.GetRegion([]byte("k1")).GetRegionEpoch()

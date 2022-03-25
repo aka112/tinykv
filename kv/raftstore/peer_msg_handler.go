@@ -773,7 +773,6 @@ func (d *peerMsgHandler) processEntryConfChange(ent *eraftpb.Entry, cc *eraftpb.
 			region.Peers = append(region.Peers, newPeer)
 			region.RegionEpoch.ConfVer++
 			meta.WriteRegionState(wb, region, rspb.PeerState_Normal)
-			wb.MustWriteToDB(d.peerStorage.Engines.Kv)
 			storeMeta := d.ctx.storeMeta
 			storeMeta.Lock()
 			storeMeta.regions[region.Id] = region
@@ -791,7 +790,6 @@ func (d *peerMsgHandler) processEntryConfChange(ent *eraftpb.Entry, cc *eraftpb.
 			region.Peers = append(region.Peers[:ind], region.Peers[ind+1:]...)
 			region.RegionEpoch.ConfVer++
 			meta.WriteRegionState(wb, region, rspb.PeerState_Normal)
-			wb.MustWriteToDB(d.peerStorage.Engines.Kv)
 			storeMeta := d.ctx.storeMeta
 			storeMeta.Lock()
 			storeMeta.regions[region.Id] = region
@@ -799,6 +797,7 @@ func (d *peerMsgHandler) processEntryConfChange(ent *eraftpb.Entry, cc *eraftpb.
 			d.removePeerCache(cc.NodeId)
 		}
 	}
+	wb.MustWriteToDB(d.peerStorage.Engines.Kv)
 	d.RaftGroup.ApplyConfChange(*cc)
 	d.handleProposals(ent, func(p *proposal) {
 		p.cb.Done(&raft_cmdpb.RaftCmdResponse{
