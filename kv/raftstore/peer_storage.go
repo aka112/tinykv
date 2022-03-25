@@ -345,7 +345,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		if err != nil {
 			return nil, err
 		}
-		ps.clearExtraData(ps.region)
+		ps.clearExtraData(snapData.Region)
 	}
 
 	sindex, sterm := snapshot.Metadata.Index, snapshot.Metadata.Term

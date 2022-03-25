@@ -346,6 +346,7 @@ func (r *Raft) tick() {
 			}
 		}
 	} else {
+		//log.Info("tick tick tick")
 		r.electionElapsed++
 		if r.electionElapsed >= r.randomizedElectionTimeout {
 			r.electionElapsed = 0
@@ -430,7 +431,11 @@ func (r *Raft) becomeLeader() {
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	if _, ok := r.Prs[r.id]; !ok && m.MsgType == pb.MessageType_MsgTimeoutNow {
+		return nil
+	}
 	if m.Term > r.Term {
+		r.leadTransferee = None
 		r.becomeFollower(m.Term, None)
 	}
 	switch r.State {
@@ -461,11 +466,12 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		if r.Prs[m.From].Match < r.RaftLog.committed {
 			r.sendAppend(m.From)
 		}
-		//r.sendAppend(m.From)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgPropose:
-		r.handleMsgPropose(m)
+		if r.leadTransferee == None {
+			r.handleMsgPropose(m)
+		}
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHup:
@@ -473,6 +479,8 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleAppendEntriesResponse(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	}
 	return nil
 }
@@ -482,13 +490,22 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgHup:
-		r.handleMsgHup()
+		//log.Infof("node %d received msgHup", r.id)
+		r.compaign()
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
+	case pb.MessageType_MsgTimeoutNow:
+		//log.Infof("node %d received msgTimeoutNow", r.id)
+		r.compaign()
 	}
 	return nil
 }
@@ -500,19 +517,26 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgHup:
-		r.handleMsgHup()
+		//log.Infof("node %d received msgHup", r.id)
+		r.compaign()
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleMsgRequestVoteResponse(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	}
 	return nil
 }
 
-// handleMsgHup handle MsgHup
-func (r *Raft) handleMsgHup() {
+// compaign makes an election
+func (r *Raft) compaign() {
+	//log.Infof("node %d is doing an election", r.id)
 	if r.State == StateLeader {
 		return
 	} else {
@@ -546,8 +570,13 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	lastIndex := r.RaftLog.LastIndex()
 	for i, ent := range m.Entries {
 		ent.Term = r.Term
-		ent.Term = r.Term
 		ent.Index = lastIndex + uint64(i) + 1
+		if ent.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex != None {
+				continue
+			}
+			r.PendingConfIndex = ent.Index
+		}
 		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
 		//log.Infof("leader %d appends entry[index:%d, term:%d, data:%s]", r.id, ent.Index, ent.Term, ent.Data)
 	}
@@ -684,6 +713,10 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		}
 		r.Prs[m.From].Match = m.Index
 		r.Prs[m.From].Next = m.Index + 1
+		if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			r.sendTimeoutNow(m.From)
+			r.leadTransferee = None
+		}
 		r.LeaderCommit()
 	}
 }
@@ -786,9 +819,49 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{Next: 1}
+	}
+	r.PendingConfIndex = None
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+		if r.State == StateLeader {
+			r.LeaderCommit()
+		}
+	}
+	r.PendingConfIndex = None
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	leadTransferee := m.From
+	if leadTransferee == r.id {
+		return
+	}
+	if r.leadTransferee != None && r.leadTransferee == leadTransferee {
+		return
+	}
+	if _, ok := r.Prs[m.From]; !ok {
+		return
+	}
+	r.electionElapsed = 0
+	r.leadTransferee = leadTransferee
+	if r.Prs[leadTransferee].Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNow(leadTransferee)
+		//log.Infof("node %d is sending timeoutNow to node %d", r.id, m.From)
+	} else {
+		r.sendAppend(leadTransferee)
+	}
+}
+
+func (r *Raft) sendTimeoutNow(transferee uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		To:      transferee,
+		From:    r.id,
+	})
 }
