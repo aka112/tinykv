@@ -490,7 +490,7 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgHup:
-		//log.Infof("node %d received msgHup", r.id)
+		//log.Infof("node %d received msgHup from %d", r.id, m.From)
 		r.compaign()
 	case pb.MessageType_MsgRequestVote:
 		r.handleRequestVote(m)
@@ -566,13 +566,16 @@ func (r *Raft) brstHeartBeat() {
 }
 
 func (r *Raft) handleMsgPropose(m pb.Message) {
-	//log.Infof("leader %d is handling MsgPropose[index=%d]", r.id, m.Index)
+	//log.Infof("leader %d is handling MsgPropose[index=%d type:]", r.id, m.Index, m.Entries[0].EntryType)
 	lastIndex := r.RaftLog.LastIndex()
 	for i, ent := range m.Entries {
 		ent.Term = r.Term
 		ent.Index = lastIndex + uint64(i) + 1
 		if ent.EntryType == pb.EntryType_EntryConfChange {
-			if r.PendingConfIndex != None {
+			//if r.PendingConfIndex != None {
+			//	continue
+			//}
+			if r.PendingConfIndex > r.RaftLog.applied {
 				continue
 			}
 			r.PendingConfIndex = ent.Index
@@ -785,6 +788,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		r.sendHeartBeatResponse(m.From, true)
 		return
 	}
+	//log.Infof("node %d received a heartbeat", r.id)
 	r.becomeFollower(m.Term, m.From)
 	//r.electionElapsed = 0
 	//r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
@@ -819,6 +823,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	//log.Infof("node %d add node %d", r.id, id)
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{Next: 1}
 	}
