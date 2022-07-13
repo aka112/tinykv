@@ -26,6 +26,28 @@ import (
 // None is a placeholder node ID used when there is no leader.
 const None uint64 = 0
 
+const DEBUG = false
+
+func LogPrint(format string, logLevel log.LogLevel, v ...interface{}) {
+	log.SetLevel(logLevel)
+	if DEBUG {
+		switch logLevel {
+		case log.LOG_LEVEL_INFO:
+			log.Infof(format, v...)
+		case log.LOG_LEVEL_WARN:
+			log.Warnf(format, v...)
+		case log.LOG_LEVEL_DEBUG:
+			log.Debugf(format, v...)
+		case log.LOG_LEVEL_ERROR:
+			log.Errorf(format, v...)
+		case log.LOG_LEVEL_FATAL:
+			log.Fatalf(format, v...)
+		}
+	}
+	log.SetLevel(log.LOG_LEVEL_INFO)
+	return
+}
+
 // StateType represents the role of a node in a cluster.
 type StateType uint64
 
@@ -268,6 +290,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	r.msgs = append(r.msgs, m)
 	//log.Infof("leader %d sends append[index:%d term:%d] to node %d ", r.id, m.Index, m.Term, m.To)
+	//LogPrint("leader %d sends append[index:%d term:%d] to node %d ", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.To)
 	return true
 }
 
@@ -388,6 +411,7 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = 0
 	r.State = StateCandidate
 	//log.Infof("%x 成为 candidate 在任期 %d", r.id, r.Term)
+	LogPrint("%d becomes candidate at term %d", log.LOG_LEVEL_WARN, r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -398,6 +422,7 @@ func (r *Raft) becomeLeader() {
 		panic("invalid transition [follower -> leader]")
 	}
 	//log.Infof("%x 成为 leader 在任期 %d", r.id, r.Term)
+	LogPrint("%d becomes leader at term %d", log.LOG_LEVEL_WARN, r.id, r.Term)
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
@@ -640,7 +665,7 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
-	//log.Infof("node %d received append[index:%d, term:%d] from leader %d", r.id, m.Index, m.Term, m.From)
+	//log.Infof("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", r.id, m.Index, m.Term, m.LogTerm, m.From)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
@@ -649,14 +674,23 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.electionElapsed = 0
 	rl := r.RaftLog
 	lastIndex := rl.LastIndex()
+	//log.Infof("node [%d] lastIndex:%v", m.To, lastIndex)
 	if lastIndex < m.Index {
+		//r.sendAppendResponse(m.From, lastIndex, true, None)
+		// AppendResponse的index与etcd中的hintindex类似
 		r.sendAppendResponse(m.From, lastIndex+1, true, None)
 		return
 	}
 	if !rl.matchTerm(m.Index, m.LogTerm) {
 		//Reply false if log doesn’t contain an entry at prevLogIndex
 		//whose term matches prevLogTerm (§5.3)
-		r.sendAppendResponse(m.From, m.Index-1, true, m.LogTerm)
+		logTerm, _ := rl.Term(m.Index)
+		sliceIndex := sort.Search(int(m.Index-rl.firstIndex+1), func(i int) bool {
+			return rl.entries[i].Term == logTerm
+		})
+		index := uint64(sliceIndex) + rl.firstIndex
+		r.sendAppendResponse(m.From, index, true, logTerm)
+		//r.sendAppendResponse(m.From, min(lastIndex, m.Index), true, m.LogTerm)
 		return
 	} else {
 		lastnewi := m.Index + uint64(len(m.Entries))
@@ -701,14 +735,19 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None)
 	}
+	//log.Infof("node [%d] received an append response[reject:%v index:%v] from node [%d]", r.id, m.Reject, m.Index, m.From)
 	if m.Reject {
-		if m.LogTerm == None {
-			r.Prs[m.From].Next--
-			r.sendAppend(m.From)
-		} else {
-			r.Prs[m.From].Next--
-			r.sendAppend(m.From)
+		//log.Infof("node [%d] next:%v match:%v", m.From, r.Prs[m.From].Next, r.Prs[m.From].Match)
+		index := m.Index
+		if m.LogTerm > 0 {
+			sliceIndex := sort.Search(len(r.RaftLog.entries), func(i int) bool {
+				return r.RaftLog.entries[i].Term == m.LogTerm
+			})
+			index = uint64(sliceIndex) + r.RaftLog.firstIndex
 		}
+		r.Prs[m.From].Next = index
+		//r.Prs[m.From].Next--
+		r.sendAppend(m.From)
 	} else {
 		term, _ := r.RaftLog.Term(m.Index)
 		if term != r.Term || m.Index < r.Prs[m.From].Next {
@@ -824,6 +863,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
 	//log.Infof("node %d add node %d", r.id, id)
+	LogPrint("node %d add node %d", log.LOG_LEVEL_WARN, r.id, id)
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{Next: 1}
 	}

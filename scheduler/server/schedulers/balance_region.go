@@ -18,6 +18,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/opt"
+	"sort"
 )
 
 func init() {
@@ -77,6 +78,82 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
-
-	return nil
+	storeInfos := cluster.GetStores()
+	suitableStores := make([]*core.StoreInfo, 0)
+	maxStoreDownTime := cluster.GetMaxStoreDownTime()
+	for _, storeInfo := range storeInfos {
+		if storeInfo.DownTime() < maxStoreDownTime {
+			suitableStores = append(suitableStores, storeInfo)
+		}
+	}
+	if len(suitableStores) <= 1 {
+		return nil
+	}
+	sort.Slice(suitableStores, func(i, j int) bool {
+		if suitableStores[i].GetRegionSize() != suitableStores[j].GetRegionSize() {
+			return suitableStores[i].GetRegionSize() > suitableStores[j].GetRegionSize()
+		}
+		return suitableStores[i].DownTime() > suitableStores[j].DownTime()
+	})
+	var selectedRegion *core.RegionInfo
+	var selectedStore *core.StoreInfo
+	for _, suitableStore := range suitableStores {
+		cluster.GetPendingRegionsWithLock(suitableStore.GetID(), func(container core.RegionsContainer) {
+			selectedRegion = container.RandomRegion(nil, nil)
+		})
+		if selectedRegion != nil {
+			selectedStore = suitableStore
+			break
+		}
+		cluster.GetFollowersWithLock(suitableStore.GetID(), func(container core.RegionsContainer) {
+			selectedRegion = container.RandomRegion(nil, nil)
+		})
+		if selectedRegion != nil {
+			selectedStore = suitableStore
+			break
+		}
+		cluster.GetLeadersWithLock(suitableStore.GetID(), func(container core.RegionsContainer) {
+			selectedRegion = container.RandomRegion(nil, nil)
+		})
+		if selectedRegion != nil {
+			selectedStore = suitableStore
+			break
+		}
+	}
+	if selectedRegion == nil {
+		return nil
+	}
+	if len(selectedRegion.GetPeers()) != cluster.GetMaxReplicas() {
+		return nil
+	}
+	var targetStore *core.StoreInfo
+	for i := len(suitableStores) - 1; i >= 0; i-- {
+		selectedRegionStores := cluster.GetRegionStores(selectedRegion)
+		isIN := false
+		for _, selectedRegionStore := range selectedRegionStores {
+			if selectedRegionStore == suitableStores[i] {
+				isIN = true
+				break
+			}
+		}
+		if !isIN {
+			targetStore = suitableStores[i]
+			break
+		}
+	}
+	if targetStore == nil {
+		return nil
+	}
+	if selectedStore.GetRegionSize()-targetStore.GetRegionSize() <= 2*selectedRegion.GetApproximateSize() {
+		return nil
+	}
+	peer, err := cluster.AllocPeer(targetStore.GetID())
+	if err != nil {
+		return nil
+	}
+	peerOperator, err := operator.CreateMovePeerOperator("move-peer", cluster, selectedRegion, operator.OpBalance, selectedStore.GetID(), targetStore.GetID(), peer.GetId())
+	if err != nil {
+		return nil
+	}
+	return peerOperator
 }

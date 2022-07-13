@@ -166,7 +166,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	return term, err
 }
 
-// matchTern return if term of i equals term
+// matchTern return true if term of i equals term
 func (l *RaftLog) matchTerm(i, term uint64) bool {
 	t, err := l.Term(i)
 	//log.Infof("term is:%d", t)
