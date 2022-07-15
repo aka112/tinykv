@@ -290,7 +290,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	r.msgs = append(r.msgs, m)
 	//log.Infof("leader %d sends append[index:%d term:%d] to node %d ", r.id, m.Index, m.Term, m.To)
-	//LogPrint("leader %d sends append[index:%d term:%d] to node %d ", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.To)
+	LogPrint("leader %d sends append[index:%d term:%d] to node %d ", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.To)
 	return true
 }
 
@@ -666,6 +666,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
 	//log.Infof("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", r.id, m.Index, m.Term, m.LogTerm, m.From)
+	LogPrint("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.LogTerm, m.From)
 	if m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
@@ -736,14 +737,17 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		r.becomeFollower(m.Term, None)
 	}
 	//log.Infof("node [%d] received an append response[reject:%v index:%v] from node [%d]", r.id, m.Reject, m.Index, m.From)
+	LogPrint("node [%d] received an append response[reject:%v index:%v logTerm:%v] from node [%d]", log.LOG_LEVEL_DEBUG, r.id, m.Reject, m.Index, m.LogTerm, m.From)
 	if m.Reject {
 		//log.Infof("node [%d] next:%v match:%v", m.From, r.Prs[m.From].Next, r.Prs[m.From].Match)
 		index := m.Index
 		if m.LogTerm > 0 {
 			sliceIndex := sort.Search(len(r.RaftLog.entries), func(i int) bool {
-				return r.RaftLog.entries[i].Term == m.LogTerm
+				return r.RaftLog.entries[i].Term > m.LogTerm
 			})
-			index = uint64(sliceIndex) + r.RaftLog.firstIndex
+			if sliceIndex > 0 && r.RaftLog.entries[sliceIndex-1].Term == m.LogTerm {
+				index = uint64(sliceIndex) + r.RaftLog.firstIndex
+			}
 		}
 		r.Prs[m.From].Next = index
 		//r.Prs[m.From].Next--
