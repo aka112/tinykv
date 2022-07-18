@@ -359,6 +359,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	if err != nil {
 		return nil, err
 	}
+	err = raftWB.SetMeta(meta.RaftStateKey(snapData.Region.GetId()), ps.raftState)
+	if err != nil {
+		return nil, err
+	}
 
 	ch := make(chan bool, 1)
 	ps.regionSched <- &runner.RegionTaskApply{
@@ -387,6 +391,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		kvWB := new(engine_util.WriteBatch)
 		result, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		kvWB.MustWriteToDB(ps.Engines.Kv)
+		raftWB.MustWriteToDB(ps.Engines.Raft)
+		raftWB.Reset()
 	}
 	ps.Append(ready.Entries, raftWB)
 	if err != nil {

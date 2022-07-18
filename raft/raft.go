@@ -16,9 +16,11 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 	"sort"
+
+	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -29,8 +31,8 @@ const None uint64 = 0
 const DEBUG = false
 
 func LogPrint(format string, logLevel log.LogLevel, v ...interface{}) {
-	log.SetLevel(logLevel)
 	if DEBUG {
+		log.SetLevel(logLevel)
 		switch logLevel {
 		case log.LOG_LEVEL_INFO:
 			log.Infof(format, v...)
@@ -43,9 +45,9 @@ func LogPrint(format string, logLevel log.LogLevel, v ...interface{}) {
 		case log.LOG_LEVEL_FATAL:
 			log.Fatalf(format, v...)
 		}
+		log.SetLevel(log.LOG_LEVEL_INFO)
 	}
-	log.SetLevel(log.LOG_LEVEL_INFO)
-	return
+	// return
 }
 
 // StateType represents the role of a node in a cluster.
@@ -168,6 +170,8 @@ type Raft struct {
 	// valid message from current leader when it is a follower.
 	electionElapsed int
 
+	transferElapsed int
+
 	// randomizedElectionTimeout is a random number between
 	// [electiontimeout, 2 * electiontimeout - 1]. It gets reset
 	// when raft changes its state to follower or candidate.
@@ -236,6 +240,10 @@ func newRaft(c *Config) *Raft {
 	return r
 }
 
+func (r *Raft) LeadTransferee() uint64 {
+	return r.leadTransferee
+}
+
 func (r *Raft) softState() *SoftState { return &SoftState{Lead: r.Lead, RaftState: r.State} }
 
 func (r *Raft) hardState() pb.HardState {
@@ -277,6 +285,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		m.Commit = r.RaftLog.committed
 	} else if err == ErrCompacted {
 		m.MsgType = pb.MessageType_MsgSnapshot
+		LogPrint("leader node %d wants to send snapshot to %d", log.LOG_LEVEL_INFO, r.id, to)
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			if err == ErrSnapshotTemporarilyUnavailable {
@@ -287,10 +296,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 		}
 		m.Snapshot = &snapshot
 		m.From = r.id
+		r.Prs[to].Next = snapshot.Metadata.Index + 1
+		LogPrint("leader node %d send snapshot to %d", log.LOG_LEVEL_INFO, r.id, to)
 	}
 	r.msgs = append(r.msgs, m)
 	//log.Infof("leader %d sends append[index:%d term:%d] to node %d ", r.id, m.Index, m.Term, m.To)
-	LogPrint("leader %d sends append[index:%d term:%d] to node %d ", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.To)
+	//LogPrint("leader %d sends append[index:%d term:%d] to node %d ", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.To)
 	return true
 }
 
@@ -304,12 +315,14 @@ func (r *Raft) sendAppendResponse(to uint64, index uint64, reject bool, logTerm 
 		Index:   index,
 		Reject:  reject,
 	})
+	LogPrint("node %d send append response %v to %d", log.LOG_LEVEL_INFO, r.id, r.msgs[len(r.msgs)-1], to)
 }
 
 func (r *Raft) sendRequestVote(to uint64) {
 	logTerm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 	//log.Infof("node %d sends a requestVote[logTerm:%d, index:%d] to node %d.",
 	//	r.id, logTerm, r.RaftLog.LastIndex(), to)
+	LogPrint("node %d sends a requestVote[logTerm:%d, index:%d] to node %d.", log.LOG_LEVEL_INFO, r.id, logTerm, r.RaftLog.LastIndex(), to)
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
 		To:      to,
@@ -368,6 +381,13 @@ func (r *Raft) tick() {
 				print(err)
 			}
 		}
+		if r.leadTransferee != None {
+			r.transferElapsed++
+			if r.transferElapsed >= 2*r.electionElapsed {
+				r.transferElapsed = 0
+				r.leadTransferee = None
+			}
+		}
 	} else {
 		//log.Info("tick tick tick")
 		r.electionElapsed++
@@ -395,6 +415,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.votes = map[uint64]bool{}
 	//log.Infof("%x 成为 follower 在任期 %d", r.id, r.Term)
+	LogPrint("%d becomes follower at term %d", log.LOG_LEVEL_INFO, r.id, r.Term)
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -411,7 +432,7 @@ func (r *Raft) becomeCandidate() {
 	r.electionElapsed = 0
 	r.State = StateCandidate
 	//log.Infof("%x 成为 candidate 在任期 %d", r.id, r.Term)
-	LogPrint("%d becomes candidate at term %d", log.LOG_LEVEL_WARN, r.id, r.Term)
+	LogPrint("%d becomes candidate at term %d", log.LOG_LEVEL_INFO, r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -422,7 +443,7 @@ func (r *Raft) becomeLeader() {
 		panic("invalid transition [follower -> leader]")
 	}
 	//log.Infof("%x 成为 leader 在任期 %d", r.id, r.Term)
-	LogPrint("%d becomes leader at term %d", log.LOG_LEVEL_WARN, r.id, r.Term)
+	LogPrint("%d becomes leader at term %d", log.LOG_LEVEL_INFO, r.id, r.Term)
 	r.State = StateLeader
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
@@ -459,7 +480,7 @@ func (r *Raft) Step(m pb.Message) error {
 	if _, ok := r.Prs[r.id]; !ok && m.MsgType == pb.MessageType_MsgTimeoutNow {
 		return nil
 	}
-	if m.Term > r.Term {
+	if m.Term != None && m.Term > r.Term {
 		r.leadTransferee = None
 		r.becomeFollower(m.Term, None)
 	}
@@ -488,9 +509,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 	case pb.MessageType_MsgBeat:
 		r.brstHeartBeat()
 	case pb.MessageType_MsgHeartbeatResponse:
-		if r.Prs[m.From].Match < r.RaftLog.committed {
-			r.sendAppend(m.From)
-		}
+		r.sendAppend(m.From)
+		//if r.Prs[m.From].Match < r.RaftLog.committed {
+		//}
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgPropose:
@@ -547,6 +568,9 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleMsgRequestVoteResponse(m)
 	case pb.MessageType_MsgHeartbeat:
+		if r.Term == m.Term {
+			r.becomeFollower(r.Term, m.From)
+		}
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
@@ -606,6 +630,11 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 			r.PendingConfIndex = ent.Index
 		}
 		r.RaftLog.entries = append(r.RaftLog.entries, *ent)
+		msg := new(raft_cmdpb.RaftCmdRequest)
+		_ = msg.Unmarshal(ent.Data)
+		if len(msg.Requests) != 0 {
+			LogPrint("leader %d appends entry with msg[%v]", log.LOG_LEVEL_INFO, r.id, msg.Requests[0])
+		}
 		//log.Infof("leader %d appends entry[index:%d, term:%d, data:%s]", r.id, ent.Index, ent.Term, ent.Data)
 	}
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
@@ -666,13 +695,13 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	// Reply false if term < currentTerm (§5.1)
 	//log.Infof("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", r.id, m.Index, m.Term, m.LogTerm, m.From)
-	LogPrint("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.LogTerm, m.From)
-	if m.Term < r.Term {
+	//LogPrint("node [%d] received append[index:%d, term:%d, logTerm:%v] from leader %d", log.LOG_LEVEL_DEBUG, r.id, m.Index, m.Term, m.LogTerm, m.From)
+	if m.Term != None && m.Term < r.Term {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, true, None)
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
-	r.electionElapsed = 0
+	// r.electionElapsed = 0
 	rl := r.RaftLog
 	lastIndex := rl.LastIndex()
 	//log.Infof("node [%d] lastIndex:%v", m.To, lastIndex)
@@ -727,6 +756,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		//min(leaderCommit, index of last new entry)
 		if m.Commit > rl.committed {
 			rl.committed = min(m.Commit, lastnewi)
+			LogPrint("node %d commit to %d", log.LOG_LEVEL_INFO, r.id, rl.committed)
 		}
 		r.sendAppendResponse(m.From, rl.LastIndex(), false, None)
 	}
@@ -751,19 +781,23 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 		}
 		r.Prs[m.From].Next = index
 		//r.Prs[m.From].Next--
+		LogPrint("leader node %d is rejected by node %d, now next of the node is %d", log.LOG_LEVEL_DEBUG, r.id, m.From, r.Prs[m.From].Next)
 		r.sendAppend(m.From)
 	} else {
-		term, _ := r.RaftLog.Term(m.Index)
-		if term != r.Term || m.Index < r.Prs[m.From].Next {
-			return
+		//term, _ := r.RaftLog.Term(m.Index)
+		//if term != r.Term || m.Index < r.Prs[m.From].Next {
+		//	return
+		//} 这一块会不会导致后面应用snapshot出问题，因为可能是之前任期的snapshot，导致一直不能更新next，从而一直给follower发snapshot
+		LogPrint("leader node %d update node %d's prs", log.LOG_LEVEL_INFO, r.id, m.From)
+		if m.Index > r.Prs[m.From].Match {
+			r.Prs[m.From].Match = m.Index
+			r.Prs[m.From].Next = m.Index + 1
+			r.LeaderCommit()
+			if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+				r.sendTimeoutNow(m.From)
+				r.leadTransferee = None
+			}
 		}
-		r.Prs[m.From].Match = m.Index
-		r.Prs[m.From].Next = m.Index + 1
-		if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
-			r.sendTimeoutNow(m.From)
-			r.leadTransferee = None
-		}
-		r.LeaderCommit()
 	}
 }
 
@@ -813,7 +847,7 @@ func (r *Raft) LeaderCommit() {
 		}
 		if logTerm == r.Term {
 			r.RaftLog.committed = n
-			//log.Infof("leader %d committed[index:%d].", r.id, r.RaftLog.committed)
+			LogPrint("leader %d committed[index:%d].", log.LOG_LEVEL_INFO, r.id, r.RaftLog.committed)
 			for k := range r.Prs {
 				if k == r.id {
 					continue
@@ -827,14 +861,15 @@ func (r *Raft) LeaderCommit() {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	if r.Term > m.Term {
+	if m.Term != None && r.Term > m.Term {
 		r.sendHeartBeatResponse(m.From, true)
 		return
 	}
 	//log.Infof("node %d received a heartbeat", r.id)
-	r.becomeFollower(m.Term, m.From)
-	//r.electionElapsed = 0
-	//r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+	// r.becomeFollower(m.Term, m.From)
+	r.Lead = m.From
+	r.electionElapsed = 0
+	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 	r.sendHeartBeatResponse(m.From, false)
 }
 
@@ -843,6 +878,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	meta := m.Snapshot.Metadata
 	sindex := meta.Index
+	LogPrint("node %d[commit: %d ] reveived a snapshot index : %d", log.LOG_LEVEL_INFO, r.id, r.RaftLog.committed, sindex)
 	if sindex <= r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.RaftLog.committed, false, None)
 		return
@@ -867,7 +903,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
 	//log.Infof("node %d add node %d", r.id, id)
-	LogPrint("node %d add node %d", log.LOG_LEVEL_WARN, r.id, id)
+	LogPrint("node %d add node %d", log.LOG_LEVEL_INFO, r.id, id)
 	if _, ok := r.Prs[id]; !ok {
 		r.Prs[id] = &Progress{Next: 1}
 	}
@@ -898,10 +934,13 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 		return
 	}
 	r.electionElapsed = 0
+	r.transferElapsed = 0
 	r.leadTransferee = leadTransferee
+	LogPrint("leader %d wants to transfer leader to %d", log.LOG_LEVEL_INFO, r.id, r.leadTransferee)
 	if r.Prs[leadTransferee].Match == r.RaftLog.LastIndex() {
 		r.sendTimeoutNow(leadTransferee)
 		//log.Infof("node %d is sending timeoutNow to node %d", r.id, m.From)
+		LogPrint("node %d is sending timeoutNow to node %d", log.LOG_LEVEL_INFO, r.id, m.From)
 	} else {
 		r.sendAppend(leadTransferee)
 	}
