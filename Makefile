@@ -55,7 +55,6 @@ project1:
 	$(GOTEST) ./kv/server -run 1
 
 project2: project2a project2b project2c
-#project2: project2b project2c
 
 project2a:
 	$(GOTEST) ./raft -run 2A
@@ -68,10 +67,6 @@ project2ab:
 
 project2ac:
 	$(GOTEST) ./raft -run 2AC
-
-projectMy: project3c
-
-#project2b project2c project3b
 
 project2b:
 	$(TEST_CLEAN)
